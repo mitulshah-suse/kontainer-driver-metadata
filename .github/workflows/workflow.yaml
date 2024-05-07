@@ -1,0 +1,110 @@
+name: Workflow for kontainer-driver-metadata
+
+on:
+  push: 
+    branches:
+      - 'dev-v*'
+      - 'release-v*'
+  pull_request:
+    branches:
+      - 'dev-v*'
+
+
+jobs:
+  validate:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: 
+      image: rancher/dapper:v0.6.0
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+#      - name: Retrieve Registy secrets from vault
+#        uses: rancher-eio/read-vault-secrets@main
+#        with:
+#          secrets: |
+#            secret/data/github/repo/${{ github.repository }}/registry-endpoint/rancher/credentials token | REGISTRY_ENDPOINT
+#      - name: Validate
+#        run: dapper ci
+      - name: test env vars
+        run: |
+          env
+    
+  mirror-images:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: validate
+    container: 
+      image: rancher/dapper:v0.6.0
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'release-v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Retrieve Registy secrets from vault
+        uses: rancher-eio/read-vault-secrets@main
+        with:
+          secrets: |
+            secret/data/github/repo/${{ github.repository }}/registry-endpoint/rancher/credentials token | REGISTRY_ENDPOINT
+            secret/data/github/repo/${{ github.repository }}/registry-username/rancher/credentials token | REGISTRY_USERNAME
+            secret/data/github/repo/${{ github.repository }}/registry-password/rancher/credentials token | REGISTRY_PASSWORD
+      - name: Validate
+        run: dapper mirror-images
+
+  upload:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: validate
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Retrieve Google auth from vault
+        uses: rancher-eio/read-vault-secrets@main
+        with:
+          secrets: |
+            secret/data/github/repo/${{ github.repository }}/google-auth/rancher/credentials token | GOOGLE_AUTH
+      - name: Authenticate with Google Cloud
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ env.GOOGLE_AUTH }}'
+      - name: Upload to Google Cloud Storage
+        uses: google-github-actions/upload-cloud-storage@v2
+        with:
+          path: data/
+          destination: releases.rancher.com/kontainer-driver-metadata/${{ github.ref_name }}
+          predefinedAcl: publicRead
+          headers: |-
+            cache-control: public,no-cache,proxy-revalidate
+
+  dispatch:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: upload
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Retrieve token from vault
+        uses: rancher-eio/read-vault-secrets@main
+        with:
+          secrets: |
+            secret/data/github/repo/${{ github.repository }}/pat-token/rancher/credentials token | PAT_TOKEN
+            secret/data/github/repo/${{ github.repository }}/pat-username/rancher/credentials token | PAT_USERNAME
+      - name: Run dispatch
+        run: |
+          scripts/dispatch
+      
+      
+      
